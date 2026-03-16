@@ -1,0 +1,20 @@
+name: flights-env
+channels:
+  - defaults
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - numpy
+  - pandas
+  - scikit-learn
+  - matplotlib
+  - seaborn
+  - jupyter
+  - notebook
+  - pip:
+      # Optional: additional packages that pip handles
+      - fastapi
+      - uvicorn
+      - xgboost
+      - lightgbm

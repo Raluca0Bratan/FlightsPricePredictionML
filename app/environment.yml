@@ -14,5 +14,7 @@ dependencies:
   - notebook
   - pip:
       # Optional: additional packages that pip handles
+      - fastapi
+      - uvicorn
       - xgboost
       - lightgbm

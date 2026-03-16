@@ -1,7 +1,7 @@
 import requests
 
 # Flask API endpoint
-API_URL = "http://127.0.0.1:5001/predict"
+API_URL = "http://127.0.0.1:8000/predict"
 
 # Example JSON input (make sure it matches your model’s expected columns)
 sample_data = {
