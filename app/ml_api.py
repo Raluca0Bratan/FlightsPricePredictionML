@@ -1,58 +1,71 @@
 import joblib
-import numpy as np
 import pandas as pd
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-# Load your trained model
-model = joblib.load("../models/random_forest_flight_price_model.pkl")
+# =========================
+# LOAD MODEL + FEATURES
+# =========================
 
-# List of features expected by the model
-FEATURE_COLUMNS = [
-    "Airline",
-    "AirlineID",
-    "Source",
-    "Destination",
-    "Total_Stops",
-    "DurationMinutes",
-    "DayOfWeek",
-    "IsWeekend",
-    "DepartureHour",
-    "DepartureDay",
-    "DepartureMonth",
-    "DepartureWeekday"
-]
+model = joblib.load('../models/model.pkl')
+features_list = joblib.load('../models/features.pkl')
 
-# Preprocessing function (simple since all features are numeric)
-def preprocess_input(data):
-    """
-    Convert JSON input into a dataframe matching model's feature columns.
-    Missing columns will raise an error.
-    """
-    # Ensure all features are provided
-    missing = [col for col in FEATURE_COLUMNS if col not in data]
+
+# =========================
+# PREPROCESS FUNCTION
+# =========================
+
+def preprocess_input(data, features):
+    df = pd.DataFrame([data])
+
+    # verificare coloane lipsă
+    missing = [f for f in features if f not in df.columns]
     if missing:
-        raise ValueError(f"Missing features in input: {missing}")
+        raise ValueError(f"Missing fields: {missing}")
 
-    # Create dataframe in correct order
-    df = pd.DataFrame([[data[col] for col in FEATURE_COLUMNS]], columns=FEATURE_COLUMNS)
-    return df
+    # ordonare exact ca în training
+    df = df[features]
 
+    return df.values
+
+
+# =========================
+# PREDICT ENDPOINT
+# =========================
 
 @app.route("/predict", methods=["POST"])
 def predict():
     try:
         data = request.get_json()
-        features = preprocess_input(data)
-        prediction = model.predict(features)
+
+        if not data:
+            return jsonify({"error": "No input data provided"}), 400
+
+        # preprocess
+        features = preprocess_input(data, features_list)
+
+        # prediction
+        prediction = int(model.predict(features)[0])
+
+        # probability (dacă există)
+        prob = None
+        if hasattr(model, "predict_proba"):
+            probs = model.predict_proba(features)[0]
+            prob = float(probs[prediction])
+
         return jsonify({
-            "input": data,
-            "predicted_price": float(prediction[0])
+            "decision": "BUY" if prediction == 1 else "WAIT",
+            "confidence": prob
         })
+
     except Exception as e:
         return jsonify({"error": str(e)}), 400
 
+
+# =========================
+# RUN SERVER
+# =========================
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5001, debug=True)
