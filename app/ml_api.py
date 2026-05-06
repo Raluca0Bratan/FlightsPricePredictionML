@@ -1,144 +1,96 @@
 import joblib
 import pandas as pd
 from flask import Flask, request, jsonify
+from datetime import datetime
 
 app = Flask(__name__)
 
 # =========================
-# LOAD MODEL + FEATURES
+# LOAD
 # =========================
-
-clf = joblib.load('../models/classifier.pkl')
-reg = joblib.load('../models/regressor.pkl')
-
-features_list = joblib.load('../models/features.pkl')
-
-route_stats = pd.read_csv('../models/route_stats.csv')
-feature_importance = pd.read_csv('../models/feature_importance.csv')
-
+reg = joblib.load('../models/reg_pipeline.pkl')
+clf = joblib.load('../models/clf_pipeline.pkl')
+route_stats = joblib.load('../models/route_stats.pkl')
 
 # =========================
-# PREPROCESS FUNCTION
+# PREPROCESS INPUT
 # =========================
-
-def preprocess_input(data, features):
+def preprocess_input(data):
     df = pd.DataFrame([data])
 
-    # verificare coloane lipsă
-    missing = [f for f in features if f not in df.columns]
+    required = ["airline", "source", "destination", "departuredatetime", "durationminutes", "total_stops"]
+
+    missing = [f for f in required if f not in df.columns]
     if missing:
         raise ValueError(f"Missing fields: {missing}")
 
-    # ordonare exact ca în training
-    df = df[features]
+    # datetime
+    df['departuredatetime'] = pd.to_datetime(df['departuredatetime'])
 
-    return df.values
+    df['DepartureHour'] = df['departuredatetime'].dt.hour
+    df['DepartureDay'] = df['departuredatetime'].dt.day
+    df['DepartureMonth'] = df['departuredatetime'].dt.month
+    df['DepartureWeekday'] = df['departuredatetime'].dt.weekday
+    df["IsWeekend"] = df["DepartureWeekday"].isin([5, 6]).astype(int)
 
+    today = pd.Timestamp.now()
+    df["DaysUntilDeparture"] = (df['departuredatetime'] - today).dt.days
+
+    # route stats
+    route = route_stats[
+        (route_stats["source"] == df["source"].iloc[0]) &
+        (route_stats["destination"] == df["destination"].iloc[0])
+    ]
+
+    if route.empty:
+        raise ValueError("Route not found in stats")
+
+    df["price_avg"] = route["price_avg"].values[0]
+    df["price_min"] = route["price_min"].values[0]
+    df["price_max"] = route["price_max"].values[0]
+
+    return df
 
 # =========================
-# PREDICT ENDPOINT
+# PREDICT
 # =========================
-
 @app.route("/predict", methods=["POST"])
 def predict():
     try:
         data = request.get_json()
 
-        if not data:
-            return jsonify({"error": "No input data provided"}), 400
+        X = preprocess_input(data)
 
-        # =====================
-        # PREPROCESS
-        # =====================
-        features = preprocess_input(data, features_list)
+        expected_price = float(reg.predict(X)[0])
+        ml_decision = int(clf.predict(X)[0])
 
-        # =====================
-        # CLASSIFICATION
-        # =====================
-        prediction = int(clf.predict(features)[0])
-        decision = "BUY" if prediction == 1 else "WAIT"
+        prob = float(max(clf.predict_proba(X)[0]))
 
-        prob = None
-        if hasattr(clf, "predict_proba"):
-            probs = clf.predict_proba(features)[0]
-            prob = float(probs[prediction])
+        price_avg = float(X["price_avg"].values[0])
 
-        # =====================
-        # PRICE PREDICTION (REAL)
-        # =====================
-        expected_price = float(reg.predict(features)[0])
-
-        # =====================
-        # REAL ROUTE STATS
-        # =====================
-        route = route_stats[
-            (route_stats["Source"] == data["Source"]) &
-            (route_stats["Destination"] == data["Destination"])
-        ]
-
-        if not route.empty:
-            stats = {
-                "min": float(route["price_min"].values[0]),
-                "max": float(route["price_max"].values[0]),
-                "avg": float(route["price_avg"].values[0]),
-                "median": float(route["price_median"].values[0]),
-                "samples": int(route["samples"].values[0])
-            }
+        # decision
+        if ml_decision == 1 and expected_price < price_avg:
+            decision = "🔥 STRONG BUY"
+        elif ml_decision == 1:
+            decision = "BUY"
+        elif expected_price > price_avg * 1.1:
+            decision = "❌ OVERPRICED"
         else:
-            stats = None
+            decision = "WAIT"
 
-        # =====================
-        # DEAL QUALITY (REAL)
-        # =====================
-        deal_quality = None
-        price_vs_avg = None
-
-        if stats:
-            price_vs_avg = ((expected_price - stats["avg"]) / stats["avg"]) * 100
-
-            deal_quality = (
-                "GOOD DEAL" if expected_price < stats["avg"]
-                else "EXPENSIVE"
-            )
-
-        # =====================
-        # RISK LEVEL
-        # =====================
-        if prob is None:
-            risk = "UNKNOWN"
-        elif prob > 0.8:
-            risk = "LOW"
-        elif prob > 0.6:
-            risk = "MEDIUM"
-        else:
-            risk = "HIGH"
-
-        # =====================
-        # TOP FEATURES (GLOBAL EXPLAINABILITY)
-        # =====================
-        top_features = feature_importance.head(5).to_dict(orient="records")
-
-        # =====================
-        # FINAL RESPONSE
-        # =====================
         return jsonify({
-            "decision": decision,
-            "confidence": prob,
-            "risk_level": risk,
-            "expected_price": round(expected_price, 2),
-            "price_vs_avg_percent": round(price_vs_avg, 2) if price_vs_avg else None,
-            "deal_quality": deal_quality,
-            "route_stats": stats,
-            "top_factors": top_features
+             "decision": decision,
+             "confidence": round(prob, 3),
+             "expected_price": round(expected_price, 2),
+             "price_vs_avg_percent": round(((expected_price - price_avg) / price_avg) * 100, 2),
+             "risk_level": "LOW" if prob >= 0.75 else "MEDIUM" if prob >= 0.5 else "HIGH",
+             "model_version": "1.0.0",
+             "timestamp": datetime.utcnow().isoformat()
         })
 
     except Exception as e:
         return jsonify({"error": str(e)}), 400
 
 
-# =========================
-# RUN SERVER
-# =========================
-
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5001, debug=True)
+    app.run(port=5001, debug=True)
